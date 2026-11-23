@@ -295,6 +295,15 @@ the 128 registers of each ADC. The report `mho-settings-<model>-<date>.txt` ends
 with `format 1`, `model`, `hwcode`, then per setting `setting NAME`, its `scpi` lines, a `state` line, `fpga`, `adc`,
 `afe` and `select` lines and `endsetting`, then `end`.
 
+With `--extended` it records, after those settings, what a channel's vertical settings and several channels at once
+need: for each channel alone at 200 us/div and 10 k points the offset from -4 to +4 divisions at 10 mV, 100 mV and
+1 V/div (set to 0 V before each scale), the coupling (AC, GND, DC), the bandwidth limits 20M and 250M (a limit the
+model lacks is answered with an SCPI error, which the report keeps) and 50 ohm; then every combination of two and
+three channels at the time bases of `--quick`, the ADCs read at the first. Their names (`CHn_offset=V_at=S`,
+`CHn_coupling=`, `CHn_bwlimit=`, `CHn_impedance=`, `combo=`) are none of the names OOS reads a time base or a scale
+from, so the file reads as without `--extended`. Every `state` line then also holds `offset1..4`, `coupling1..4`,
+`bwlimit1..4` and `imp1..4`.
+
 `tools/mho-check.py <scope-ip> --afe-init` records the front ends' set-up at the start of the stock scope program:
 it switches on the trace event of `--afe` (a 16 MiB buffer in memory), restarts the program (`am force-stop`;
 Android's launcher starts it again, else `monkey` does), records for about half a minute, and sets the trace back.

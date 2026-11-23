@@ -4,7 +4,7 @@
 """Record what the stock MHO900 system sets for each setting, for OOS to set the same
 (docs/protocols/mho-acquisition.md, section 7).
 
-  mho-settings.py <scope-ip> [--adb-port 55555] [--scpi-port 5555] [--yes] [--quick]
+  mho-settings.py <scope-ip> [--adb-port 55555] [--scpi-port 5555] [--yes] [--quick] [--extended]
 
 Needs tools/mho-check.py next to it (its adb, SCPI, trace and register helpers) and the same set-up: network adb as
 root, SCPI on port 5555, the stock system running. Nothing may be connected to the inputs.
@@ -19,6 +19,12 @@ FPGA's ADC bridge, as --snapshot). The steps:
   at the first) and every scale at 200 us/div (the front ends' words and the lanes' gain and offset);
 - the time bases with all four channels on;
 - every combination of channels on, at 1 us/div, with the ADCs (their input selection follows the channels).
+
+--extended adds, after those, what a channel's vertical settings and several channels at once need: for each channel
+alone at 200 us/div the offset at 10 mV, 100 mV and 1 V/div (from -4 to +4 divisions), the coupling (AC, GND), the
+bandwidth limits and 50 ohm; then every combination of two and three channels at the time bases of --quick (the ADCs
+read at the first). Every setting's state then also holds each channel's offset, coupling, bandwidth limit and
+impedance. About 15 minutes more.
 
 Then it sets everything back, the depth included. About 12 minutes (--quick: fewer time bases, about 6). It writes
 mho-settings-<model>-<date>.txt; its last part, after `---- oos settings ----`, is what OOS reads.
@@ -37,6 +43,11 @@ TIMEBASES = ("2e-9", "5e-9", "1e-8", "2e-8", "5e-8", "1e-7", "2e-7", "5e-7", "1e
              "5e-5", "1e-4", "2e-4", "5e-4", "1e-3", "2e-3", "5e-3", "1e-2", "2e-2", "5e-2", "1e-1")
 TIMEBASES_QUICK = ("2e-9", "1e-8", "1e-7", "1e-6", "1e-5", "1e-4", "2e-4", "1e-3", "1e-2", "1e-1")
 COMBOS = [c for k in (1, 2, 3, 4) for c in itertools.combinations((1, 2, 3, 4), k)]
+# --extended: the scales at which the offset is stepped, the offsets in divisions, the bandwidth limits tried (a limit
+# the model does not have is answered with an SCPI error, which the report keeps)
+OFFSET_SCALES = ("0.01", "0.1", "1")
+OFFSET_DIVS = (-4, -2, -1, 1, 2, 4)
+BW_LIMITS = ("20M", "250M")
 
 
 def load_check():
@@ -85,13 +96,52 @@ def plan(quick=False):
     return steps
 
 
+def offset_value(div, scale):
+    """The offset of `div` divisions at `scale` V/div, as the SCPI number (no float noise: 4 * 0.1 is 0.4)."""
+    return f"{div * float(scale):.6g}"
+
+
+def extended_plan():
+    """[(name, [SCPI commands], read the ADCs)] of --extended, after plan(): for each channel alone at 200 us/div and
+    10 k points the offset in divisions at three scales, set back to 0 V before the next scale; the coupling; the
+    bandwidth limits; 50 ohm. Then every combination of two and three channels at the time bases of --quick, the ADCs
+    read at the first (their input selection follows the channels). The names start with the channel and a word of
+    their own (`CHn_offset=`, `CHn_coupling=`, `combo=`), so that none is a setting of plan()."""
+    steps = []
+    for n in (1, 2, 3, 4):
+        steps.append((f"CH{n} vertical", channels_commands((n,)) + [
+            ":TIMebase:MAIN:SCALe 2e-4", ":ACQuire:MDEPth 10k", f":CHANnel{n}:IMPedance OMEG",
+            f":CHANnel{n}:COUPling DC", f":CHANnel{n}:BWLimit OFF", f":CHANnel{n}:OFFSet 0"], False))
+        for v in OFFSET_SCALES:
+            steps.append((f"CH{n} offset=0 at={v}", [f":CHANnel{n}:OFFSet 0", f":CHANnel{n}:SCALe {v}"], False))
+            steps += [(f"CH{n} offset={offset_value(d, v)} at={v}", [f":CHANnel{n}:OFFSet {offset_value(d, v)}"], False)
+                      for d in OFFSET_DIVS]
+        steps.append((f"CH{n} vertical at=0.1", [f":CHANnel{n}:OFFSet 0", f":CHANnel{n}:SCALe 0.1"], False))
+        steps += [(f"CH{n} coupling={c}", [f":CHANnel{n}:COUPling {c}"], False) for c in ("AC", "GND", "DC")]
+        steps += [(f"CH{n} bwlimit={b}", [f":CHANnel{n}:BWLimit {b}"], False) for b in BW_LIMITS + ("OFF",)]
+        steps += [(f"CH{n} impedance=FIFTy", [f":CHANnel{n}:IMPedance FIFTy"], False),
+                  (f"CH{n} impedance=OMEG", [f":CHANnel{n}:IMPedance OMEG", f":CHANnel{n}:SCALe 1"], False)]
+    for c in (c for c in COMBOS if len(c) in (2, 3)):
+        name = ",".join(map(str, c))
+        steps.append((f"combo={name} on", channels_commands(c) + [":TIMebase:MAIN:SCALe 1e-6",
+                                                                  ":ACQuire:MDEPth 10k"], False))
+        steps += [(f"combo={name} tdiv={tb}", [f":TIMebase:MAIN:SCALe {tb}"], k == 0)
+                  for k, tb in enumerate(TIMEBASES_QUICK)]
+    return steps
+
+
 STATE_QUERIES = ([f":CHANnel{n}:DISPlay?" for n in (1, 2, 3, 4)] + [f":CHANnel{n}:SCALe?" for n in (1, 2, 3, 4)]
                  + [":TIMebase:MAIN:SCALe?", ":ACQuire:SRATe?", ":ACQuire:MDEPth?"])
+STATE_KEYS = [f"on{n}" for n in (1, 2, 3, 4)] + [f"scale{n}" for n in (1, 2, 3, 4)] + ["tdiv", "srate", "mdepth"]
+# --extended: each channel's vertical settings too
+VERTICAL = (("offset", "OFFSet"), ("coupling", "COUPling"), ("bwlimit", "BWLimit"), ("imp", "IMPedance"))
+EXTENDED_QUERIES = STATE_QUERIES + [f":CHANnel{n}:{q}?" for _, q in VERTICAL for n in (1, 2, 3, 4)]
+EXTENDED_KEYS = STATE_KEYS + [f"{k}{n}" for k, _ in VERTICAL for n in (1, 2, 3, 4)]
 
 
-def state_line(answers):
-    """`state KEY=VALUE ...` of the queries' answers, the keys short: on1..on4, scale1..scale4, tdiv, srate, mdepth."""
-    keys = [f"on{n}" for n in (1, 2, 3, 4)] + [f"scale{n}" for n in (1, 2, 3, 4)] + ["tdiv", "srate", "mdepth"]
+def state_line(answers, keys=STATE_KEYS):
+    """`state KEY=VALUE ...` of the queries' answers, the keys short: on1..on4, scale1..scale4, tdiv, srate, mdepth
+    (and with --extended offset1..4, coupling1..4, bwlimit1..4, imp1..4)."""
     return "state " + " ".join(f"{k}={(v or '-').replace(' ', '')}" for k, v in zip(keys, answers))
 
 
@@ -113,6 +163,9 @@ def main():
     ap.add_argument("--scpi-port", type=int, default=5555)
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--quick", action="store_true", help="fewer time bases (about 6 minutes)")
+    ap.add_argument("--extended", action="store_true",
+                    help="also the offset, coupling, bandwidth limit, 50 ohm and the combinations of two and three "
+                    "channels at several time bases (about 15 minutes more)")
     a = ap.parse_args()
     adb = MC.Adb(f"{a.host}:{a.adb_port}")
     adb.connect()
@@ -127,11 +180,13 @@ def main():
     why = tracer.available()
     if why:
         sys.exit(f"mho-settings.py: {why}; nothing done")
-    steps = plan(a.quick)
+    steps = plan(a.quick) + (extended_plan() if a.extended else [])
+    queries, keys = (EXTENDED_QUERIES, EXTENDED_KEYS) if a.extended else (STATE_QUERIES, STATE_KEYS)
+    minutes = (6 if a.quick else 15) + (15 if a.extended else 0)
     if not a.yes:
         ans = input(f"mho-settings.py steps the stock system through {len(steps)} settings over SCPI (time bases, "
                     "channels, scales) and records what it sets in the FPGA, the ADCs and the front ends, then sets "
-                    f"everything back (about {6 if a.quick else 15} minutes). Nothing may be connected to the inputs. "
+                    f"everything back (about {minutes} minutes). Nothing may be connected to the inputs. "
                     "Go on? [y/N] ")
         if ans.strip().lower() not in ("y", "yes", "j", "ja"):
             sys.exit("declined; nothing done")
@@ -167,7 +222,7 @@ def main():
                 for _, g, op, v in ev:
                     if op == "set":
                         levels[g] = v
-                state = state_line([scpi.query(q) for q in STATE_QUERIES])
+                state = state_line([scpi.query(q) for q in queries], keys)
                 regs = {}
                 for k in range(0, len(MC.SNAPSHOT_REGS), MC.SHELL_CHUNK * 4):
                     regs.update(adb.regs(MC.SNAPSHOT_REGS[k:k + MC.SHELL_CHUNK * 4]))
