@@ -4,7 +4,7 @@
 """Record what the stock MHO900 system sets for each setting, for OOS to set the same
 (docs/protocols/mho-acquisition.md, section 7).
 
-  mho-settings.py <scope-ip> [--adb-port 55555] [--scpi-port 5555] [--yes] [--quick] [--extended]
+  mho-settings.py <scope-ip> [--adb-port 55555] [--scpi-port 5555] [--yes] [--quick] [--extended | --trigger-only]
 
 Needs tools/mho-check.py next to it (its adb, SCPI, trace and register helpers) and the same set-up: network adb as
 root, SCPI on port 5555, the stock system running. Nothing may be connected to the inputs.
@@ -24,7 +24,9 @@ FPGA's ADC bridge, as --snapshot). The steps:
 alone at 200 us/div the offset at 10 mV, 100 mV and 1 V/div (from -4 to +4 divisions), the coupling (AC, GND), the
 bandwidth limits and 50 ohm; then every combination of two and three channels at the time bases of --quick (the ADCs
 read at the first). Every setting's state then also holds each channel's offset, coupling, bandwidth limit and
-impedance. About 15 minutes more.
+impedance. Last, for each channel alone with the trigger on it, the edge trigger's level at +2 divisions at every
+scale, once with an offset and once on the falling slope: the TPU's level words then show the gain the stock system
+converts the level with. About 20 minutes more. --trigger-only takes only those trigger steps (about 6 minutes).
 
 Then it sets everything back, the depth included. About 12 minutes (--quick: fewer time bases, about 6). It writes
 mho-settings-<model>-<date>.txt; its last part, after `---- oos settings ----`, is what OOS reads.
@@ -48,6 +50,8 @@ COMBOS = [c for k in (1, 2, 3, 4) for c in itertools.combinations((1, 2, 3, 4), 
 OFFSET_SCALES = ("0.01", "0.1", "1")
 OFFSET_DIVS = (-4, -2, -1, 1, 2, 4)
 BW_LIMITS = ("20M", "250M")
+# --extended, --trigger-only: the trigger level in divisions at every scale
+TRIGGER_DIVS = 2
 
 
 def load_check():
@@ -93,6 +97,29 @@ def plan(quick=False):
     steps.append(("tdiv=1e-6", [":TIMebase:MAIN:SCALe 1e-6"], False))
     for c in COMBOS:
         steps.append((f"chans={','.join(map(str, c))} tdiv=1e-6", channels_commands(c), True))
+    return steps
+
+
+def trigger_plan():
+    """[(name, [SCPI commands], read the ADCs)] of the trigger steps: for each channel alone at 200 us/div, the trigger
+    on it, rising, the level at +TRIGGER_DIVS divisions at every scale; at 100 mV/div once more with an offset of -2
+    divisions and once on the falling slope; then the level back to 0 V. The names start with `CHn_trig=`."""
+    steps = []
+    for n in (1, 2, 3, 4):
+        steps.append((f"CH{n} trigger", channels_commands((n,)) + [
+            ":TIMebase:MAIN:SCALe 2e-4", ":ACQuire:MDEPth 10k", f":CHANnel{n}:OFFSet 0", ":TRIGger:MODE EDGE",
+            f":TRIGger:EDGE:SOURce CHANnel{n}", ":TRIGger:EDGE:SLOPe POSitive"], False))
+        for v in MC.SCALES:
+            level = offset_value(TRIGGER_DIVS, v)
+            steps.append((f"CH{n} trig={level} at={v}", [f":CHANnel{n}:SCALe {v}", f":TRIGger:EDGE:LEVel {level}"],
+                          False))
+        level, off = offset_value(TRIGGER_DIVS, "0.1"), offset_value(-TRIGGER_DIVS, "0.1")
+        steps += [(f"CH{n} trig={level} at=0.1 offset={off}", [f":CHANnel{n}:SCALe 0.1",
+                                                              f":TRIGger:EDGE:LEVel {level}",
+                                                              f":CHANnel{n}:OFFSet {off}"], False),
+                  (f"CH{n} trig={level} at=0.1 falling", [f":CHANnel{n}:OFFSet 0", ":TRIGger:EDGE:SLOPe NEGative"],
+                   False),
+                  (f"CH{n} trig=0 at=0.1", [":TRIGger:EDGE:SLOPe POSitive", ":TRIGger:EDGE:LEVel 0"], False)]
     return steps
 
 
@@ -164,8 +191,10 @@ def main():
     ap.add_argument("--yes", action="store_true")
     ap.add_argument("--quick", action="store_true", help="fewer time bases (about 6 minutes)")
     ap.add_argument("--extended", action="store_true",
-                    help="also the offset, coupling, bandwidth limit, 50 ohm and the combinations of two and three "
-                    "channels at several time bases (about 15 minutes more)")
+                    help="also the offset, coupling, bandwidth limit, 50 ohm, the combinations of two and three "
+                    "channels at several time bases and the trigger level at every scale (about 20 minutes more)")
+    ap.add_argument("--trigger-only", action="store_true",
+                    help="only the trigger level at every scale of each channel (about 6 minutes)")
     a = ap.parse_args()
     adb = MC.Adb(f"{a.host}:{a.adb_port}")
     adb.connect()
@@ -180,9 +209,13 @@ def main():
     why = tracer.available()
     if why:
         sys.exit(f"mho-settings.py: {why}; nothing done")
-    steps = plan(a.quick) + (extended_plan() if a.extended else [])
+    if a.trigger_only:
+        steps, a.extended = plan(a.quick)[:1] + trigger_plan(), True
+        minutes = 6
+    else:
+        steps = plan(a.quick) + (extended_plan() + trigger_plan() if a.extended else [])
+        minutes = (6 if a.quick else 15) + (20 if a.extended else 0)
     queries, keys = (EXTENDED_QUERIES, EXTENDED_KEYS) if a.extended else (STATE_QUERIES, STATE_KEYS)
-    minutes = (6 if a.quick else 15) + (15 if a.extended else 0)
     if not a.yes:
         ans = input(f"mho-settings.py steps the stock system through {len(steps)} settings over SCPI (time bases, "
                     "channels, scales) and records what it sets in the FPGA, the ADCs and the front ends, then sets "
@@ -194,7 +227,7 @@ def main():
     idn = MC.idn_without_serial(scpi.query("*IDN?"))
     model = (idn.split(",")[1].strip() if idn.count(",") >= 3 else "MHO900").replace(" ", "")
     code = adb.sh("cat /sys/class/hdcode/hdcode_dev/hdcode_value").strip()
-    cmds = MC.snapshot_restore_list() + [":ACQuire:MDEPth"]
+    cmds = MC.snapshot_restore_list() + [":ACQuire:MDEPth", ":TRIGger:EDGE:SLOPe"]
     keep = {c + "?": scpi.query(c + "?") for c in MC.query_list(cmds) + [":TRIGger:STATus"]}
     levels = {}
     for g, line in MC.gpio_lines(adb.sh("cat /sys/kernel/debug/gpio")).items():

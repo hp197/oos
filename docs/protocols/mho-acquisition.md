@@ -303,6 +303,12 @@ three channels at the time bases of `--quick`, the ADCs read at the first. Their
 `CHn_coupling=`, `CHn_bwlimit=`, `CHn_impedance=`, `combo=`) are none of the names OOS reads a time base or a scale
 from, so the file reads as without `--extended`. Every `state` line then also holds `offset1..4`, `coupling1..4`,
 `bwlimit1..4` and `imp1..4`.
+Last, for each channel alone at 200 us/div with the edge trigger on it, it sets the trigger level to +2 divisions at
+every scale (`CHn_trig=L_at=S`), at 100 mV/div once more with an offset of -2 divisions and once on the falling slope:
+the TPU's level words of those settings give the gain the stock system converts a level with. On an MHO98 that gain
+was not the read-out's 7500 codes per division but 6720 at 100 mV/div, 7253 at 1 V/div and 7477 at 10 mV/div, with
+a hysteresis of 0.3 division at the same gain, and the level words the same for both slopes (only 0x201c changes);
+**verified on the unit** (GitHub issue #4). `--trigger-only` takes only those steps.
 
 `tools/mho-check.py <scope-ip> --afe-init` records the front ends' set-up at the start of the stock scope program:
 it switches on the trace event of `--afe` (a 16 MiB buffer in memory), restarts the program (`am force-stop`;

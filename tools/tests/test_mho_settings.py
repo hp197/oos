@@ -65,6 +65,22 @@ class Steps(unittest.TestCase):
         self.assertEqual(adc, [f"combo={','.join(map(str, c))} tdiv=2e-9" for c in ms.COMBOS if len(c) in (2, 3)])
         self.assertTrue(all(":ACQuire:MDEPth 10k" in c for n, c, _ in ext if n.endswith((" vertical", " on"))))
 
+    def test_the_trigger_steps_set_a_level_at_every_scale_of_each_channel(self):
+        trig = ms.trigger_plan()
+        names = [n for n, _, _ in trig]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertFalse(set(names) & {n for n, _, _ in ms.plan() + ms.extended_plan()})
+        self.assertEqual(len(trig), 4 * (1 + len(ms.MC.SCALES) + 3))
+        steps = dict((n, c) for n, c, _ in trig)
+        # the trigger on the channel itself, the level at +2 divisions of the scale
+        self.assertIn(":TRIGger:EDGE:SOURce CHANnel3", steps["CH3 trigger"])
+        self.assertEqual(steps["CH3 trig=0.2 at=0.1"], [":CHANnel3:SCALe 0.1", ":TRIGger:EDGE:LEVel 0.2"])
+        self.assertEqual(steps["CH2 trig=0.002 at=0.001"], [":CHANnel2:SCALe 0.001", ":TRIGger:EDGE:LEVel 0.002"])
+        self.assertIn(":CHANnel1:OFFSet -0.2", steps["CH1 trig=0.2 at=0.1 offset=-0.2"])
+        self.assertIn(":TRIGger:EDGE:SLOPe NEGative", steps["CH4 trig=0.2 at=0.1 falling"])
+        self.assertFalse([n for n, _, r in trig if r], "the trigger does not change the sampling")
+        self.assertFalse([n for n in names if n.startswith(("CH1 tdiv=", "CH1 scale="))])
+
     def test_the_extended_state_holds_each_channels_vertical_settings(self):
         self.assertEqual(len(ms.EXTENDED_QUERIES), len(ms.EXTENDED_KEYS))
         answers = ["1"] * len(ms.STATE_QUERIES) + ["0.3", "0", "0", "0"] + ["AC"] * 4 + ["OFF"] * 4 + ["OMEG"] * 4
