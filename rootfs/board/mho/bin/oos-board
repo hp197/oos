@@ -6,8 +6,10 @@
 # one to /oos (oos-mho-live, after oos-ui runs); a file /oos/mho-manual leaves that to the owner.
 #
 #   oos-board has-hardware       exit 1: rcS starts no acquisition hardware (oos-mho-live does, in the background)
-#   oos-board early STATUS       mounts /rigol read only (oos-mount-rigol), so vendor.bin gives the model and the MAC;
-#                                starts oos-mho-live 8 s later when /oos/mho-snapshot.txt is there
+#   oos-board early STATUS       gives the CPU's thermal zone the step_wise governor, which drives the fan from the
+#                                zone's active trips (the device tree); mounts /rigol read only (oos-mount-rigol), so
+#                                vendor.bin gives the model and the MAC; starts oos-mho-live 8 s later when
+#                                /oos/mho-snapshot.txt is there
 #   oos-board drivers            kernel modules of the board: the touch panel
 #   oos-board ui-args STATUS     prints nothing (demo signal)
 #   oos-board bring-up STATUS    exit 1: no acquisition hardware comes up
@@ -15,6 +17,9 @@
 case "$1" in
 has-hardware) exit 1;;
 early)
+	for z in /sys/class/thermal/thermal_zone*; do
+		[ "$(cat "$z/type" 2>/dev/null)" = cpu-thermal ] && echo step_wise > "$z/policy" 2>/dev/null
+	done
 	/bin/oos-mount-rigol >/dev/null 2>&1
 	if [ -r /oos/mho-snapshot.txt ] && [ ! -e /oos/mho-manual ]; then
 		(setsid sh -c 'sleep 8; /bin/oos-mho-live > /tmp/oos-mho-live.log 2>&1' < /dev/null > /dev/null 2>&1 &)

@@ -54,7 +54,8 @@ From the probe (reported by one unit, not checked on hardware by us):
 - **Kernel**: the same kernel as the DHO, with the device tree `kernel/dts/rk3399-rigol-mho900.dts`. It takes the DHO
   tree and changes what is the DHO's: PCIe with the MHO's PERST# (GPIO1_A3), spi5 with a spidev for the FPGA's image,
   the bring-up's lines named as stock names them, no spi1, no beeper on GPIO4_A3, no backlight enable on GPIO1_C2, no
-  fan line on GPIO4_A5. The fan runs on PWM1 at full speed from the start (`pwm-fan`, `CONFIG_SENSORS_PWM_FAN`). The
+  fan line on GPIO4_A5. The fan runs on PWM1 at full speed from the start (`pwm-fan`, `CONFIG_SENSORS_PWM_FAN`), until
+  the CPU's thermal zone takes it over (below, "Fan"). The
   MHO's acquisition pins are named for the bring-up and the first acquisition (the front ends' bus and their select
   lines) and driven only by them.
 - **Image**: `rootfs/board/mho`: the PCIe host and xdma modules (loaded only by the bring-up below), the touch driver, `/rigol` mounted read only (vendor.bin
@@ -90,6 +91,23 @@ From the probe (reported by one unit, not checked on hardware by us):
 
 Not in it: power off from the front panel (no power command goes to the panel MCU; switch off at the power key or
 the mains), the beeper, the FPGA temperature.
+
+## Fan
+
+The stock system drives the fan's PWM (PWM1, 25 kHz, `pwm-fan`, 0 to 255) between 30 % and 100 % with a regulator
+of its own, from the SoC's temperature (`thermal_zone0`): on an MHO98 it kept it at 175 to 186 at 54 to 56 deg C
+(**verified on the unit**, GitHub issue #4, read from `/sys/class/hwmon` under the stock system). The five TMP421 on
+I2C bus 4 have no driver bound under the stock system, so their temperatures do not take part there.
+
+OOS leaves it to the kernel's thermal framework: the device tree gives `pwm-fan` eight levels from 77 (30 %) to 255
+and the CPU's thermal zone five active trips (38, 42, 46, 48 and 50 deg C, 2 deg C hysteresis), each mapped to a range
+of levels (1-2, 2-3, 3-5, 5-6, 7). Active trips are handled by the `step_wise` governor, which `oos-board early` gives
+the zone (`/sys/class/thermal/thermal_zoneN/policy`; the kernel's default, `power_allocator`, only drives cooling
+devices with a power model, so it leaves a fan alone). Above a trip the fan rises one level per second while the
+temperature rises, up to the map's highest level; it falls back once the temperature is below the trip by its
+hysteresis; below 38 deg C it is at level 0. The fan runs at full speed from the driver's probe until the governor
+first acts, and stays so if no thermal zone takes it. The CPU's own passive trips stay (the frequency is lowered from
+85 deg C). `cat /sys/class/hwmon/hwmon*/pwm1` and `/sys/class/thermal/cooling_device*/cur_state` show the fan's level.
 
 ## Build
 

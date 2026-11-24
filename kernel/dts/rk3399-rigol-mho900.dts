@@ -18,8 +18,10 @@
  *   module, loaded only then). spi1 (the DHO's FPGA boot monitor) stays off.
  * - GPIO4_A3 is an AFE select line ("c"), not the beeper: no pwm-gpio beeper.
  * - GPIO1_C2 is the chip select of the sample clock PLL, not the backlight enable (the stock backlight has none).
- * - GPIO4_A5 is not the fan: the fan runs on PWM1 (GPIO4_C6, 25 kHz), stock `pwm-fan`. Here it runs at full speed
- *   from the probe of its driver on, as the DHO's fan does from the probe of gpio4.
+ * - GPIO4_A5 is not the fan: the fan runs on PWM1 (GPIO4_C6, 25 kHz), stock `pwm-fan`. It runs at full speed from
+ *   the probe of its driver on, then follows the SoC's temperature: eight levels from 30 % (the stock system's least)
+ *   to 100 %, raised by the active trips of the CPU's thermal zone (38 to 50 deg C). Active trips are handled by the
+ *   step_wise governor, which `oos-board early` gives this zone (the default power_allocator leaves a fan alone).
  * - The front panel's UART is left as on the DHO (only RX and TX pins); oos-ui only listens on it on this board.
  * The lines of the bring-up are named as the stock system names them (platform probe, /sys/kernel/debug/gpio), so
  * oos-fpgad finds them by name: the supplies, the clock chip's 3-wire bus, the FPGA's configuration lines and the
@@ -41,12 +43,70 @@
 		spi5 = &spi5;
 	};
 
-	/* As stock: PWM1 at 25 kHz, normal polarity. One cooling level, full speed. */
+	/* As stock: PWM1 at 25 kHz, normal polarity; levels 0 to 7 from 30 % to 100 % (stock drives 30 % to 100 %). */
 	fan_pwm: pwm-fan {
 		compatible = "pwm-fan";
 		pwms = <&pwm1 0 40000 0>;
-		cooling-levels = <255>;
+		cooling-levels = <77 102 128 153 179 204 230 255>;
 		#cooling-cells = <2>;
+	};
+};
+
+/*
+ * The fan follows the SoC's temperature (docs/mho.md, "Fan"): above each active trip step_wise raises the fan one level
+ * per second while the temperature rises, up to the map's upper level, and lowers it again once the temperature falls
+ * below the trip by its hysteresis; below 38 deg C the fan goes to level 0 (30 %). The CPU's own passive trips stay.
+ */
+&cpu_thermal {
+	trips {
+		fan_t0: fan-t0 {
+			temperature = <38000>;
+			hysteresis = <2000>;
+			type = "active";
+		};
+		fan_t1: fan-t1 {
+			temperature = <42000>;
+			hysteresis = <2000>;
+			type = "active";
+		};
+		fan_t2: fan-t2 {
+			temperature = <46000>;
+			hysteresis = <2000>;
+			type = "active";
+		};
+		fan_t3: fan-t3 {
+			temperature = <48000>;
+			hysteresis = <2000>;
+			type = "active";
+		};
+		fan_t4: fan-t4 {
+			temperature = <50000>;
+			hysteresis = <2000>;
+			type = "active";
+		};
+	};
+
+	cooling-maps {
+		map-fan0 {
+			trip = <&fan_t0>;
+			cooling-device = <&fan_pwm 1 2>;
+		};
+		map-fan1 {
+			trip = <&fan_t1>;
+			cooling-device = <&fan_pwm 2 3>;
+		};
+		map-fan2 {
+			trip = <&fan_t2>;
+			cooling-device = <&fan_pwm 3 5>;
+		};
+		map-fan3 {
+			trip = <&fan_t3>;
+			cooling-device = <&fan_pwm 5 6>;
+		};
+		map-fan4 {
+			trip = <&fan_t4>;
+			cooling-device = <&fan_pwm 7 7>;
+		};
 	};
 };
 

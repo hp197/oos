@@ -243,7 +243,7 @@ impl Board for Mho {
     }
 
     fn fan(&self) -> &'static str {
-        "full speed (pwm-fan)"
+        "follows the SoC temperature (pwm-fan, thermal zone)"
     }
 
     fn clock_steps(&self) -> &'static [f64] {
